@@ -1,0 +1,123 @@
+---
+# Manage Airflow Services
+#
+# Usage:
+#   ansible-playbook playbooks/manage.yml -e "action=status"
+#   ansible-playbook playbooks/manage.yml -e "action=start"
+#   ansible-playbook playbooks/manage.yml -e "action=stop"
+#   ansible-playbook playbooks/manage.yml -e "action=restart"
+#   ansible-playbook playbooks/manage.yml -e "action=logs"
+#   ansible-playbook playbooks/manage.yml -e "action=logs" -e "service=webserver"
+#   ansible-playbook playbooks/manage.yml -e "action=scale" -e "workers=3"
+#   ansible-playbook playbooks/manage.yml -e "action=rebuild"
+
+- name: Manage Airflow Services
+  hosts: airflow_servers
+  become: yes
+
+  vars:
+    airflow_home: /opt/airflow
+    airflow_user: airflow
+    action: status
+    service: ""
+    workers: 1
+
+  tasks:
+    # Status
+    - name: Get service status
+      command: docker compose ps
+      args:
+        chdir: "{{ airflow_home }}"
+      register: status_output
+      changed_when: false
+      become_user: "{{ airflow_user }}"
+      when: action == "status"
+
+    - name: Display status
+      debug:
+        msg: "{{ status_output.stdout_lines }}"
+      when: action == "status"
+
+    # Start
+    - name: Start services
+      command: docker compose up -d
+      args:
+        chdir: "{{ airflow_home }}"
+      become_user: "{{ airflow_user }}"
+      when: action == "start"
+
+    # Stop
+    - name: Stop services
+      command: docker compose down
+      args:
+        chdir: "{{ airflow_home }}"
+      become_user: "{{ airflow_user }}"
+      when: action == "stop"
+
+    # Restart
+    - name: Restart services
+      command: docker compose restart
+      args:
+        chdir: "{{ airflow_home }}"
+      become_user: "{{ airflow_user }}"
+      when: action == "restart"
+
+    # Logs
+    - name: Get logs (all services)
+      command: docker compose logs --tail=100
+      args:
+        chdir: "{{ airflow_home }}"
+      register: logs_output
+      changed_when: false
+      become_user: "{{ airflow_user }}"
+      when: action == "logs" and service == ""
+
+    - name: Get logs (specific service)
+      command: "docker compose logs --tail=100 {{ service }}"
+      args:
+        chdir: "{{ airflow_home }}"
+      register: logs_output
+      changed_when: false
+      become_user: "{{ airflow_user }}"
+      when: action == "logs" and service != ""
+
+    - name: Display logs
+      debug:
+        msg: "{{ logs_output.stdout_lines }}"
+      when: action == "logs"
+
+    # Scale workers
+    - name: Scale workers
+      command: "docker compose up -d --scale worker={{ workers }}"
+      args:
+        chdir: "{{ airflow_home }}"
+      become_user: "{{ airflow_user }}"
+      when: action == "scale"
+
+    - name: Display scale result
+      debug:
+        msg: "Scaled workers to {{ workers }}"
+      when: action == "scale"
+
+    # Rebuild
+    - name: Rebuild and restart services
+      command: docker compose up -d --build
+      args:
+        chdir: "{{ airflow_home }}"
+      become_user: "{{ airflow_user }}"
+      when: action == "rebuild"
+
+    # List DAGs
+    - name: List DAGs
+      command: docker compose exec -T webserver airflow dags list
+      args:
+        chdir: "{{ airflow_home }}"
+      register: dags_output
+      changed_when: false
+      become_user: "{{ airflow_user }}"
+      when: action == "dags"
+
+    - name: Display DAGs
+      debug:
+        msg: "{{ dags_output.stdout_lines }}"
+      when: action == "dags"

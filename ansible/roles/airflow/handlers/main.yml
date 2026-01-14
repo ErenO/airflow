@@ -1,0 +1,16 @@
+---
+# Airflow handlers
+
+- name: Restart Airflow
+  command: docker compose restart
+  args:
+    chdir: "{{ airflow_home }}"
+  become: yes
+  become_user: "{{ airflow_user }}"
+
+- name: Rebuild Images
+  command: docker compose up -d --build
+  args:
+    chdir: "{{ airflow_home }}"
+  become: yes
+  become_user: "{{ airflow_user }}"

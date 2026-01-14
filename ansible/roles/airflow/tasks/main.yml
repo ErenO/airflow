@@ -1,0 +1,168 @@
+---
+# Airflow deployment tasks
+# Deploys Airflow with Docker Compose
+
+- name: Create airflow user
+  user:
+    name: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    system: yes
+    create_home: no
+  ignore_errors: yes
+
+- name: Create airflow group
+  group:
+    name: "{{ airflow_group }}"
+    system: yes
+  ignore_errors: yes
+
+- name: Create Airflow directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0755'
+  loop:
+    - "{{ airflow_home }}"
+    - "{{ airflow_home }}/dags"
+    - "{{ airflow_home }}/plugins"
+    - "{{ airflow_home }}/logs"
+    - "{{ airflow_home }}/docker"
+    - "{{ airflow_home }}/docker/base"
+    - "{{ airflow_home }}/docker/redis"
+    - "{{ airflow_home }}/docker/webserver"
+    - "{{ airflow_home }}/docker/scheduler"
+    - "{{ airflow_home }}/docker/worker"
+    - "{{ airflow_home }}/docker/flower"
+    - "{{ airflow_home }}/docker/init"
+
+- name: Copy Docker Compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ airflow_home }}/docker-compose.yml"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0644'
+  notify: Restart Airflow
+
+- name: Copy environment file
+  template:
+    src: env.j2
+    dest: "{{ airflow_home }}/.env"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0600'
+  notify: Restart Airflow
+
+- name: Copy base Dockerfile
+  template:
+    src: docker/base/Dockerfile.j2
+    dest: "{{ airflow_home }}/docker/base/Dockerfile"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0644'
+  notify: Rebuild Images
+
+- name: Copy Redis Dockerfile
+  template:
+    src: docker/redis/Dockerfile.j2
+    dest: "{{ airflow_home }}/docker/redis/Dockerfile"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0644'
+  notify: Rebuild Images
+
+- name: Copy Webserver Dockerfile
+  template:
+    src: docker/webserver/Dockerfile.j2
+    dest: "{{ airflow_home }}/docker/webserver/Dockerfile"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0644'
+  notify: Rebuild Images
+
+- name: Copy Scheduler Dockerfile
+  template:
+    src: docker/scheduler/Dockerfile.j2
+    dest: "{{ airflow_home }}/docker/scheduler/Dockerfile"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0644'
+  notify: Rebuild Images
+
+- name: Copy Worker Dockerfile
+  template:
+    src: docker/worker/Dockerfile.j2
+    dest: "{{ airflow_home }}/docker/worker/Dockerfile"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0644'
+  notify: Rebuild Images
+
+- name: Copy Flower Dockerfile
+  template:
+    src: docker/flower/Dockerfile.j2
+    dest: "{{ airflow_home }}/docker/flower/Dockerfile"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0644'
+  notify: Rebuild Images
+
+- name: Copy Init Dockerfile
+  template:
+    src: docker/init/Dockerfile.j2
+    dest: "{{ airflow_home }}/docker/init/Dockerfile"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0644'
+  notify: Rebuild Images
+
+- name: Copy Init entrypoint script
+  template:
+    src: docker/init/entrypoint.sh.j2
+    dest: "{{ airflow_home }}/docker/init/entrypoint.sh"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    mode: '0755'
+  notify: Rebuild Images
+
+- name: Sync DAGs
+  synchronize:
+    src: "{{ dags_source }}"
+    dest: "{{ airflow_home }}/dags/"
+    delete: yes
+    recursive: yes
+  delegate_to: "{{ inventory_hostname }}"
+
+- name: Set DAGs ownership
+  file:
+    path: "{{ airflow_home }}/dags"
+    owner: "{{ airflow_user }}"
+    group: "{{ airflow_group }}"
+    recurse: yes
+
+- name: Build base image
+  command: docker build -t airflow-base:latest -f docker/base/Dockerfile .
+  args:
+    chdir: "{{ airflow_home }}"
+  become: yes
+  become_user: "{{ airflow_user }}"
+  register: base_build
+  changed_when: "'Successfully built' in base_build.stdout or 'writing image' in base_build.stdout"
+
+- name: Start Airflow services
+  command: docker compose up -d --build
+  args:
+    chdir: "{{ airflow_home }}"
+  become: yes
+  become_user: "{{ airflow_user }}"
+  register: compose_up
+
+- name: Scale workers
+  command: "docker compose up -d --scale worker={{ airflow_worker_replicas }}"
+  args:
+    chdir: "{{ airflow_home }}"
+  become: yes
+  become_user: "{{ airflow_user }}"
+  when: airflow_worker_replicas | int > 1

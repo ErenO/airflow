@@ -1,0 +1,88 @@
+---
+# Main deployment tasks for Airflow
+#
+# This file orchestrates the complete Airflow deployment:
+# 1. Install Docker on target server
+# 2. Deploy Airflow with Docker Compose
+# 3. Configure and start all services
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml tasks/main.yml
+#
+# Tags:
+#   - docker:  Only install/configure Docker
+#   - airflow: Only deploy Airflow
+#   - dags:    Only sync DAGs
+
+- name: Deploy Airflow with Celery Executor
+  hosts: airflow_servers
+  become: yes
+
+  vars:
+    # Airflow settings
+    airflow_home: /opt/airflow
+    airflow_user: airflow
+    airflow_group: airflow
+
+    # Admin credentials (override with -e or vault)
+    airflow_admin_user: "{{ lookup('env', 'AIRFLOW_ADMIN_USER') | default('airflow', true) }}"
+    airflow_admin_password: "{{ lookup('env', 'AIRFLOW_ADMIN_PASSWORD') | default('airflow', true) }}"
+
+    # Database settings
+    airflow_postgres_user: airflow
+    airflow_postgres_password: "{{ lookup('env', 'AIRFLOW_POSTGRES_PASSWORD') | default('airflow', true) }}"
+    airflow_postgres_db: airflow
+
+    # Security
+    airflow_secret_key: "{{ lookup('env', 'AIRFLOW_SECRET_KEY') | default('change-me-in-production', true) }}"
+
+    # UI Customization
+    airflow_navbar_color: '#b71c1c'
+
+    # Worker settings
+    airflow_worker_replicas: 1
+    airflow_worker_concurrency: 4
+
+    # DAGs source
+    dags_source: "{{ playbook_dir }}/../../dags/"
+
+  pre_tasks:
+    - name: Display deployment info
+      debug:
+        msg: |
+          ========================================
+          Deploying Airflow to: {{ inventory_hostname }}
+          Airflow Home: {{ airflow_home }}
+          Workers: {{ airflow_worker_replicas }}
+          ========================================
+
+  roles:
+    - role: docker
+      tags: [docker]
+
+    - role: airflow
+      tags: [airflow]
+
+  post_tasks:
+    - name: Wait for services to be healthy
+      uri:
+        url: "http://localhost:8080/health"
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 10
+      tags: [airflow]
+
+    - name: Display completion message
+      debug:
+        msg: |
+          ========================================
+          Airflow Deployment Complete!
+          ========================================
+          Web UI:  http://{{ ansible_host }}:8080
+          Flower:  http://{{ ansible_host }}:5555
+
+          Login:   {{ airflow_admin_user }}
+          ========================================
+      tags: [airflow]

@@ -1,0 +1,31 @@
+#!/bin/bash
+set -e
+
+echo "=== Airflow Init ==="
+
+echo "Waiting for PostgreSQL..."
+while ! nc -z postgres 5432; do
+    sleep 1
+done
+echo "PostgreSQL is ready!"
+
+echo "Waiting for Redis..."
+while ! nc -z redis 6379; do
+    sleep 1
+done
+echo "Redis is ready!"
+
+echo "Running database migrations..."
+airflow db migrate
+
+echo "Creating admin user..."
+airflow users create \
+    --username "${AIRFLOW_ADMIN_USER:-{{ airflow_admin_user }}}" \
+    --password "${AIRFLOW_ADMIN_PASSWORD:-{{ airflow_admin_password }}}" \
+    --firstname Admin \
+    --lastname User \
+    --role Admin \
+    --email admin@example.com \
+    2>/dev/null || echo "Admin user already exists"
+
+echo "=== Init Complete ==="

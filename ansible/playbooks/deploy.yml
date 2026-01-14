@@ -1,0 +1,5 @@
+---
+# Deploy Airflow - wrapper for tasks/main.yml
+# Usage: ansible-playbook playbooks/deploy.yml
+
+- import_playbook: ../tasks/main.yml

@@ -1,0 +1,57 @@
+---
+# Update DAGs on remote server
+#
+# Usage:
+#   ansible-playbook playbooks/update-dags.yml
+#   ansible-playbook playbooks/update-dags.yml -e "dags_source=/path/to/dags/"
+
+- name: Update Airflow DAGs
+  hosts: airflow_servers
+  become: yes
+
+  vars:
+    airflow_home: /opt/airflow
+    airflow_user: airflow
+    airflow_group: airflow
+    dags_source: "{{ playbook_dir }}/../../dags/"
+    dags_delete_removed: false
+
+  tasks:
+    - name: Display update info
+      debug:
+        msg: |
+          Updating DAGs on: {{ inventory_hostname }}
+          Source: {{ dags_source }}
+          Delete removed: {{ dags_delete_removed }}
+
+    - name: Sync DAGs to remote
+      synchronize:
+        src: "{{ dags_source }}"
+        dest: "{{ airflow_home }}/dags/"
+        delete: "{{ dags_delete_removed }}"
+        recursive: yes
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: Set DAGs ownership
+      file:
+        path: "{{ airflow_home }}/dags"
+        owner: "{{ airflow_user }}"
+        group: "{{ airflow_group }}"
+        recurse: yes
+
+    - name: List deployed DAGs
+      find:
+        paths: "{{ airflow_home }}/dags"
+        patterns: "*.py"
+        recurse: yes
+      register: dag_files
+
+    - name: Display deployed DAGs
+      debug:
+        msg: |
+          ========================================
+          DAGs Update Complete!
+          ========================================
+          Deployed {{ dag_files.files | length }} DAG files
+          Location: {{ airflow_home }}/dags/
+          ========================================

@@ -1,0 +1,16 @@
+# Airflow Webserver image
+# Managed by Ansible
+
+FROM airflow-base:latest
+
+USER airflow
+
+COPY --chown=airflow:root dags/ /opt/airflow/dags/
+COPY --chown=airflow:root plugins/ /opt/airflow/plugins/
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=5 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["airflow", "webserver", "--port", "8080"]

@@ -1,0 +1,175 @@
+# Airflow with Celery Executor - Production-ready split architecture
+#
+# Services:
+#   - postgres:   PostgreSQL database for Airflow metadata
+#   - redis:      Redis as Celery message broker
+#   - init:       One-time initialization (migrations, admin user)
+#   - webserver:  Airflow Web UI
+#   - scheduler:  Airflow Scheduler
+#   - worker:     Celery Worker(s) for task execution
+#   - flower:     Celery monitoring UI
+#
+# Usage:
+#   # Build and start all services
+#   docker compose up --build -d
+#
+#   # Scale workers
+#   docker compose up -d --scale worker=3
+#
+#   # View logs
+#   docker compose logs -f webserver
+#
+#   # Stop all services
+#   docker compose down
+
+x-airflow-common: &airflow-common
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+    AIRFLOW__WEBSERVER__SECRET_KEY: 'your-secret-key-change-in-production'
+    AIRFLOW__WEBSERVER__RBAC: 'true'
+    AIRFLOW__WEBSERVER__NAVBAR_COLOR: '#b71c1c'
+    AIRFLOW__WEBSERVER__INSTANCE_NAME: '<style>.navbar a,.navbar span,.navbar .nav-link,.navbar-brand,.navbar-nav a{color:#fff!important}</style>Airflow'
+    AIRFLOW__WEBSERVER__INSTANCE_NAME_HAS_MARKUP: 'True'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__CELERY__WORKER_CONCURRENCY: 4
+    AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-airflow}
+    AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./plugins:/opt/airflow/plugins
+    - airflow-logs:/opt/airflow/logs
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Message Broker
+  redis:
+    build:
+      context: .
+      dockerfile: docker/redis/Dockerfile
+    container_name: airflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Airflow Init (one-time setup)
+  init:
+    build:
+      context: .
+      dockerfile: docker/init/Dockerfile
+    container_name: airflow-init
+    <<: *airflow-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  # Airflow Webserver
+  webserver:
+    build:
+      context: .
+      dockerfile: docker/webserver/Dockerfile
+    container_name: airflow-webserver
+    <<: *airflow-common
+    ports:
+      - "8080:8080"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Airflow Scheduler
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/scheduler/Dockerfile
+    container_name: airflow-scheduler
+    <<: *airflow-common
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--hostname", "airflow-scheduler"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Airflow Celery Worker
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    <<: *airflow-common
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+  # Flower (Celery Monitoring)
+  flower:
+    build:
+      context: .
+      dockerfile: docker/flower/Dockerfile
+    container_name: airflow-flower
+    <<: *airflow-common
+    ports:
+      - "5555:5555"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5555/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  airflow-logs:
