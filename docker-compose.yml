@@ -1,4 +1,4 @@
-# Airflow with Celery Executor - Production-ready split architecture
+# Airflow with Celery Executor - Using Official Docker Images
 #
 # Services:
 #   - postgres:   PostgreSQL database for Airflow metadata
@@ -10,8 +10,8 @@
 #   - flower:     Celery monitoring UI
 #
 # Usage:
-#   # Build and start all services
-#   docker compose up --build -d
+#   # Start all services
+#   docker compose up -d
 #
 #   # Scale workers
 #   docker compose up -d --scale worker=3
@@ -23,6 +23,7 @@
 #   docker compose down
 
 x-airflow-common: &airflow-common
+  image: apache/airflow:2.7.2-python3.11
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__CORE__FERNET_KEY: ''
@@ -33,17 +34,14 @@ x-airflow-common: &airflow-common
     AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
     AIRFLOW__WEBSERVER__SECRET_KEY: 'your-secret-key-change-in-production'
     AIRFLOW__WEBSERVER__RBAC: 'true'
-    AIRFLOW__WEBSERVER__NAVBAR_COLOR: '#b71c1c'
-    AIRFLOW__WEBSERVER__INSTANCE_NAME: '<style>.navbar a,.navbar span,.navbar .nav-link,.navbar-brand,.navbar-nav a{color:#fff!important}</style>Airflow'
-    AIRFLOW__WEBSERVER__INSTANCE_NAME_HAS_MARKUP: 'True'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     AIRFLOW__CELERY__WORKER_CONCURRENCY: 4
-    AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-airflow}
-    AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
+    _PIP_ADDITIONAL_REQUIREMENTS: 'redis flower gusty'
   volumes:
     - ./dags:/opt/airflow/dags
     - ./plugins:/opt/airflow/plugins
     - airflow-logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
 
 services:
   # PostgreSQL Database
@@ -67,9 +65,7 @@ services:
 
   # Redis Message Broker
   redis:
-    build:
-      context: .
-      dockerfile: docker/redis/Dockerfile
+    image: redis:7-alpine
     container_name: airflow-redis
     ports:
       - "6379:6379"
@@ -84,11 +80,26 @@ services:
 
   # Airflow Init (one-time setup)
   init:
-    build:
-      context: .
-      dockerfile: docker/init/Dockerfile
-    container_name: airflow-init
     <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "=== Airflow Init ==="
+        airflow db migrate
+        airflow users create \
+          --username $${AIRFLOW_ADMIN_USER:-airflow} \
+          --password $${AIRFLOW_ADMIN_PASSWORD:-airflow} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+        echo "=== Init Complete ==="
+    environment:
+      <<: *airflow-common-env
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-airflow}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,11 +109,9 @@ services:
 
   # Airflow Webserver
   webserver:
-    build:
-      context: .
-      dockerfile: docker/webserver/Dockerfile
-    container_name: airflow-webserver
     <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
     ports:
       - "8080:8080"
     depends_on:
@@ -117,11 +126,9 @@ services:
 
   # Airflow Scheduler
   scheduler:
-    build:
-      context: .
-      dockerfile: docker/scheduler/Dockerfile
-    container_name: airflow-scheduler
     <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
     depends_on:
       init:
         condition: service_completed_successfully
@@ -134,10 +141,8 @@ services:
 
   # Airflow Celery Worker
   worker:
-    build:
-      context: .
-      dockerfile: docker/worker/Dockerfile
     <<: *airflow-common
+    command: celery worker
     depends_on:
       init:
         condition: service_completed_successfully
@@ -152,11 +157,9 @@ services:
 
   # Flower (Celery Monitoring)
   flower:
-    build:
-      context: .
-      dockerfile: docker/flower/Dockerfile
-    container_name: airflow-flower
     <<: *airflow-common
+    container_name: airflow-flower
+    command: celery flower
     ports:
       - "5555:5555"
     depends_on:
