@@ -3,7 +3,6 @@
 # Services:
 #   - postgres:   PostgreSQL database for Airflow metadata
 #   - redis:      Redis as Celery message broker
-#   - init:       One-time initialization (migrations, admin user)
 #   - webserver:  Airflow Web UI
 #   - scheduler:  Airflow Scheduler
 #   - worker:     Celery Worker(s) for task execution
@@ -29,7 +28,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    # PostgreSQL connection (uses container by default, or external via POSTGRES_HOST)
+    # PostgreSQL connection
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airflow}
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airflow}
     AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
@@ -38,6 +37,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     AIRFLOW__CELERY__WORKER_CONCURRENCY: 4
     _PIP_ADDITIONAL_REQUIREMENTS: 'redis flower gusty'
+    # Auto-initialize database and create admin user
+    _AIRFLOW_DB_MIGRATE: 'true'
+    _AIRFLOW_WWW_USER_CREATE: 'true'
+    _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-airflow}
+    _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./plugins:/opt/airflow/plugins
@@ -58,7 +62,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airflow}"]
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -79,35 +83,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Airflow Init (one-time setup)
-  init:
-    <<: *airflow-common
-    container_name: airflow-init
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        echo "=== Airflow Init ==="
-        airflow db migrate
-        airflow users create \
-          --username $${AIRFLOW_ADMIN_USER:-airflow} \
-          --password $${AIRFLOW_ADMIN_PASSWORD:-airflow} \
-          --firstname Admin \
-          --lastname User \
-          --role Admin \
-          --email admin@example.com || true
-        echo "=== Init Complete ==="
-    environment:
-      <<: *airflow-common-env
-      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-airflow}
-      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: "no"
-
   # Airflow Webserver
   webserver:
     <<: *airflow-common
@@ -116,8 +91,10 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      init:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -131,8 +108,10 @@ services:
     container_name: airflow-scheduler
     command: scheduler
     depends_on:
-      init:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--hostname", "airflow-scheduler"]
       interval: 30s
@@ -145,8 +124,10 @@ services:
     <<: *airflow-common
     command: celery worker
     depends_on:
-      init:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$$HOSTNAME"]
       interval: 30s
@@ -164,8 +145,10 @@ services:
     ports:
       - "5555:5555"
     depends_on:
-      init:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5555/"]
       interval: 30s
